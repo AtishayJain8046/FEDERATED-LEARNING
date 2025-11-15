@@ -1,0 +1,47 @@
+name: Test Project
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.8'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Test imports
+      run: |
+        python -c "from federated import FederatedClient, FederatedServer"
+        python -c "from federated import DifferentialPrivacy, SecureMultiPartyComputation"
+        python -c "from models import SimpleMLP"
+        python -c "from data import generate_synthetic_data"
+        echo "✓ All imports successful"
+    
+    - name: Run basic test
+      run: |
+        python -c "
+        from models import SimpleMLP
+        from data import generate_synthetic_data
+        from federated import FederatedClient, FederatedServer
+        
+        # Quick smoke test
+        model = SimpleMLP(input_size=784, num_classes=10)
+        X, y = generate_synthetic_data(n_samples=100, n_features=784, n_classes=10)
+        server = FederatedServer(global_model=model)
+        print('✓ Basic components work')
+        "
+
