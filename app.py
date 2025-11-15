@@ -175,10 +175,27 @@ def run_federated_experiment(
                     y = y[indices]
                 num_features = 784  # MNIST is 28x28 = 784
                 num_classes = 10
+                
+                # Validate data
+                if len(X) == 0 or len(y) == 0:
+                    return {
+                        "success": False,
+                        "error": "MNIST dataset loaded but is empty. Please check data directory."
+                    }
+                if X.shape[1] != 784:
+                    return {
+                        "success": False,
+                        "error": f"MNIST data shape mismatch. Expected 784 features, got {X.shape[1]}"
+                    }
             except ImportError as e:
                 return {
                     "success": False,
                     "error": f"MNIST requires torchvision: {str(e)}. Install with: pip install torchvision"
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Failed to load MNIST dataset: {str(e)}. Check if data is downloaded correctly."
                 }
         else:
             # Use synthetic data
@@ -233,144 +250,174 @@ def run_federated_experiment(
         # Run federated learning rounds
         round_metrics = []
         for round_num in range(num_rounds):
-            # Broadcast global model to all clients
-            server.broadcast_model()
-            
-            # Select clients for this round
-            selected_indices = server.select_clients(min(3, num_clients))
-            selected_clients = [server.clients[i] for i in selected_indices]
-            
-            # Collect updates from selected clients
-            client_updates = []
-            client_metrics = []
-            
-            for client in selected_clients:
-                # Local training
-                metrics = client.train(epochs=local_epochs)
-                client_metrics.append(metrics)
+            try:
+                # Broadcast global model to all clients
+                server.broadcast_model()
                 
-                # Get updated parameters
-                params = client.get_model_parameters()
+                # Select clients for this round
+                selected_indices = server.select_clients(min(3, num_clients))
+                selected_clients = [server.clients[i] for i in selected_indices]
                 
-                # Apply DP to parameter updates if enabled
-                if use_dp and dp:
-                    # Convert parameters to gradients (difference from global model)
-                    global_params = server.global_model.state_dict()
-                    param_diff = {}
-                    for key in params.keys():
-                        param_diff[key] = params[key] - global_params[key]
-                    
-                    # Apply DP to the parameter differences (treating them as gradients)
-                    dp_params = dp.apply_dp(param_diff)
-                    
-                    # Add back to global model to get noisy parameters
-                    noisy_params = {}
-                    for key in params.keys():
-                        noisy_params[key] = global_params[key] + dp_params[key]
-                    params = noisy_params
+                # Collect updates from selected clients
+                client_updates = []
+                client_metrics = []
                 
-                num_samples = len(client.data_loader.dataset) if client.data_loader else 1
+                for client in selected_clients:
+                    try:
+                        # Local training
+                        metrics = client.train(epochs=local_epochs)
+                        client_metrics.append(metrics)
+                        
+                        # Get updated parameters
+                        params = client.get_model_parameters()
+                        
+                        # Apply DP to parameter updates if enabled
+                        if use_dp and dp:
+                            # Convert parameters to gradients (difference from global model)
+                            global_params = server.global_model.state_dict()
+                            param_diff = {}
+                            for key in params.keys():
+                                param_diff[key] = params[key] - global_params[key]
+                            
+                            # Apply DP to the parameter differences (treating them as gradients)
+                            dp_params = dp.apply_dp(param_diff)
+                            
+                            # Add back to global model to get noisy parameters
+                            noisy_params = {}
+                            for key in params.keys():
+                                noisy_params[key] = global_params[key] + dp_params[key]
+                            params = noisy_params
+                        
+                        num_samples = len(client.data_loader.dataset) if client.data_loader else 1
+                        
+                        client_updates.append({
+                            "parameters": params,
+                            "num_samples": num_samples,
+                            "client_id": client.client_id
+                        })
+                    except Exception as e:
+                        print(f"Error training client {client.client_id}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # Skip this client if training fails
+                        continue
                 
-                client_updates.append({
-                    "parameters": params,
-                    "num_samples": num_samples,
-                    "client_id": client.client_id
-                })
-            
-            # Aggregate updates using selected privacy mechanisms
-            # Apply in order: DP (on individual updates) -> SMPC/HE (on aggregation)
-            
-            # Step 1: Apply DP to individual client updates if enabled
-            if use_dp and dp:
-                for update in client_updates:
-                    # Apply DP to parameter differences
-                    global_params = server.global_model.state_dict()
-                    param_diff = {}
-                    for key in update["parameters"].keys():
-                        param_diff[key] = update["parameters"][key] - global_params[key]
-                    
-                    # Apply DP
-                    dp_params = dp.apply_dp(param_diff)
-                    
-                    # Add back to global model
-                    for key in update["parameters"].keys():
-                        update["parameters"][key] = global_params[key] + dp_params[key]
-            
-            # Step 2: Aggregate using SMPC or HE if enabled
-            if use_he and he:
-                # Lightweight HE: Only encrypt/aggregate first layer parameters for demo
-                try:
-                    aggregated_params = aggregate_with_he(he, client_updates, server.global_model.state_dict())
-                except Exception as e:
-                    # Fallback to SMPC or regular aggregation if HE fails
-                    print(f"HE aggregation failed, falling back: {e}")
-                    if use_smpc and smpc:
-                        total_samples = sum(update["num_samples"] for update in client_updates)
-                        weighted_updates = []
-                        for update in client_updates:
-                            weight = update["num_samples"] / total_samples
-                            weighted_params = {k: v * weight for k, v in update["parameters"].items()}
-                            weighted_updates.append(weighted_params)
-                        aggregated_params = smpc.secure_aggregation(weighted_updates)
-                    else:
-                        aggregated_params = server.aggregate_updates(client_updates)
-            elif use_smpc and smpc:
-                # Use SMPC for secure aggregation
-                total_samples = sum(update["num_samples"] for update in client_updates)
-                weighted_updates = []
-                for update in client_updates:
-                    weight = update["num_samples"] / total_samples
-                    weighted_params = {k: v * weight for k, v in update["parameters"].items()}
-                    weighted_updates.append(weighted_params)
-                aggregated_params = smpc.secure_aggregation(weighted_updates)
-            else:
-                # Standard FedAvg aggregation
-                aggregated_params = server.aggregate_updates(client_updates)
-            
-            # Update global model
-            server.global_model.load_state_dict(aggregated_params)
-            
-            # Calculate average metrics
-            avg_loss = sum(m["loss"] for m in client_metrics) / len(client_metrics) if client_metrics else 0.0
-            
-            # Evaluate on test set
-            if dataset_name.lower() == "mnist":
-                try:
-                    test_X, test_y = load_dataset("mnist", train=False, download=True)
-                    # Limit test samples
-                    if len(test_X) > 200:
-                        indices = torch.randperm(len(test_X))[:200]
-                        test_X = test_X[indices]
-                        test_y = test_y[indices]
-                except ImportError:
-                    # Fallback to synthetic test data
+                if not client_updates:
+                    print(f"Warning: No client updates collected in round {round_num + 1}")
+                    continue
+                
+                # Aggregate updates using selected privacy mechanisms
+                # Apply in order: DP (on individual updates) -> SMPC/HE (on aggregation)
+                
+                # Step 1: DP is already applied per client above (if enabled)
+                # Step 2: Aggregate using SMPC or HE if enabled
+                if use_he and he:
+                    # Lightweight HE: Only encrypt/aggregate first layer parameters for demo
+                    try:
+                        aggregated_params = aggregate_with_he(he, client_updates, server.global_model.state_dict())
+                    except Exception as e:
+                        # Fallback to SMPC or regular aggregation if HE fails
+                        print(f"HE aggregation failed, falling back: {e}")
+                        if use_smpc and smpc:
+                            total_samples = sum(update["num_samples"] for update in client_updates)
+                            weighted_updates = []
+                            for update in client_updates:
+                                weight = update["num_samples"] / total_samples
+                                weighted_params = {k: v * weight for k, v in update["parameters"].items()}
+                                weighted_updates.append(weighted_params)
+                            aggregated_params = smpc.secure_aggregation(weighted_updates)
+                        else:
+                            aggregated_params = server.aggregate_updates(client_updates)
+                elif use_smpc and smpc:
+                    # Use SMPC for secure aggregation
+                    total_samples = sum(update["num_samples"] for update in client_updates)
+                    weighted_updates = []
+                    for update in client_updates:
+                        weight = update["num_samples"] / total_samples
+                        weighted_params = {k: v * weight for k, v in update["parameters"].items()}
+                        weighted_updates.append(weighted_params)
+                    aggregated_params = smpc.secure_aggregation(weighted_updates)
+                else:
+                    # Standard FedAvg aggregation
+                    aggregated_params = server.aggregate_updates(client_updates)
+                
+                # Update global model
+                server.global_model.load_state_dict(aggregated_params)
+                
+                # Calculate average metrics
+                avg_loss = sum(m["loss"] for m in client_metrics) / len(client_metrics) if client_metrics else 0.0
+                
+                # Evaluate on test set
+                if dataset_name.lower().startswith("uploaded:"):
+                    # Use same uploaded dataset for testing (split from training)
+                    test_X, test_y = X[:min(200, len(X)//5)], y[:min(200, len(y)//5)]
+                elif dataset_name.lower() == "mnist":
+                    try:
+                        test_X, test_y = load_dataset("mnist", train=False, download=True)
+                        # Limit test samples
+                        if len(test_X) > 200:
+                            indices = torch.randperm(len(test_X))[:200]
+                            test_X = test_X[indices]
+                            test_y = test_y[indices]
+                    except ImportError:
+                        # Fallback to synthetic test data
+                        test_X, test_y = generate_synthetic_data(
+                            n_samples=200,
+                            n_features=num_features,
+                            n_classes=num_classes,
+                            random_state=999
+                        )
+                else:
                     test_X, test_y = generate_synthetic_data(
                         n_samples=200,
                         n_features=num_features,
                         n_classes=num_classes,
                         random_state=999
                     )
-            else:
-                test_X, test_y = generate_synthetic_data(
-                    n_samples=200,
-                    n_features=num_features,
-                    n_classes=num_classes,
-                    random_state=999
-                )
-            metrics = server.evaluate_global_model((test_X, test_y))
-            
-            round_metrics.append({
-                "round": round_num + 1,
-                "accuracy": metrics["accuracy"],
-                "loss": metrics["loss"],
-                "avg_client_loss": avg_loss
-            })
+                metrics = server.evaluate_global_model((test_X, test_y))
+                
+                round_metrics.append({
+                    "round": round_num + 1,
+                    "accuracy": metrics["accuracy"],
+                    "loss": metrics["loss"],
+                    "avg_client_loss": avg_loss
+                })
+            except Exception as e:
+                print(f"Error in round {round_num + 1}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Continue to next round even if this one fails
+                continue
+        
+        # Check if we have any successful rounds
+        if not round_metrics:
+            return {
+                "success": False,
+                "error": "No successful rounds completed. All rounds failed. Check server logs for details.",
+                "round_metrics": []
+            }
+        
+        # Ensure all values are JSON-serializable (convert NaN/Inf to None)
+        def make_json_safe(obj):
+            """Convert NaN and Inf to None for JSON serialization."""
+            if isinstance(obj, dict):
+                return {k: make_json_safe(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [make_json_safe(item) for item in obj]
+            elif isinstance(obj, float):
+                import math
+                if math.isnan(obj) or math.isinf(obj):
+                    return None
+                return obj
+            return obj
+        
+        safe_round_metrics = make_json_safe(round_metrics)
         
         return {
             "success": True,
-            "round_metrics": round_metrics,
-            "final_accuracy": round_metrics[-1]["accuracy"],
-            "final_loss": round_metrics[-1]["loss"],
+            "round_metrics": safe_round_metrics,
+            "final_accuracy": safe_round_metrics[-1]["accuracy"] if safe_round_metrics[-1]["accuracy"] is not None else 0.0,
+            "final_loss": safe_round_metrics[-1]["loss"] if safe_round_metrics[-1]["loss"] is not None else 0.0,
             "config": {
                 "num_clients": num_clients,
                 "num_rounds": num_rounds,
@@ -431,13 +478,41 @@ def run_experiment():
             dataset_name=dataset_name
         )
         
+        # Ensure result is a dictionary (not None)
+        if result is None:
+            result = {
+                "success": False,
+                "error": "Experiment returned None. Check server logs for details."
+            }
+        
+        # Ensure result is a dict
+        if not isinstance(result, dict):
+            result = {
+                "success": False,
+                "error": f"Experiment returned invalid type: {type(result)}. Check server logs for details."
+            }
+        
         # Store in history
-        if result["success"]:
+        if result.get("success"):
             experiment_history.append(result)
             result["experiment_id"] = len(experiment_history) - 1
         
-        return jsonify(result)
+        # Ensure all values are JSON-serializable
+        try:
+            return jsonify(result)
+        except (TypeError, ValueError) as json_error:
+            # If JSON serialization fails, return error with details
+            print(f"JSON serialization error: {json_error}")
+            print(f"Result type: {type(result)}")
+            print(f"Result keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
+            return jsonify({
+                "success": False,
+                "error": f"Failed to serialize result to JSON: {str(json_error)}. Check server logs for details."
+            }), 500
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Error in run_experiment endpoint: {error_trace}")
         return jsonify({
             "success": False,
             "error": str(e)
@@ -452,43 +527,89 @@ def compare_noise():
         epsilon_values = data.get('epsilon_values', [0.1, 0.5, 1.0, 2.0, 5.0])
         num_rounds = int(data.get('num_rounds', 10))
         num_clients = int(data.get('num_clients', 5))
+        dataset_name = data.get('dataset_name', 'synthetic')
+        num_samples = int(data.get('num_samples', 1000))
+        local_epochs = int(data.get('local_epochs', 1))
+        
+        # Validate dataset selection for uploaded datasets
+        if dataset_name == 'uploaded':
+            return jsonify({
+                "success": False,
+                "error": "Compare noise levels is not supported with uploaded datasets. Please use synthetic or MNIST."
+            }), 400
         
         results = []
+        errors = []
+        
         for epsilon in epsilon_values:
-            result = run_federated_experiment(
-                num_clients=num_clients,
-                num_rounds=num_rounds,
-                epsilon=epsilon,
-                delta=1e-5,
-                clip_norm=1.0,
-                use_dp=True,
-                num_samples=1000
-            )
-            if result["success"]:
-                results.append({
-                    "epsilon": epsilon,
-                    "final_accuracy": result["final_accuracy"],
-                    "final_loss": result["final_loss"],
-                    "round_metrics": result["round_metrics"]
-                })
+            try:
+                result = run_federated_experiment(
+                    num_clients=num_clients,
+                    num_rounds=num_rounds,
+                    local_epochs=local_epochs,
+                    epsilon=epsilon,
+                    delta=1e-5,
+                    clip_norm=1.0,
+                    use_dp=True,
+                    num_samples=num_samples,
+                    dataset_name=dataset_name
+                )
+                if result.get("success"):
+                    results.append({
+                        "epsilon": epsilon,
+                        "final_accuracy": result.get("final_accuracy", 0.0),
+                        "final_loss": result.get("final_loss", 0.0),
+                        "round_metrics": result.get("round_metrics", [])
+                    })
+                else:
+                    errors.append(f"Epsilon {epsilon}: {result.get('error', 'Unknown error')}")
+            except Exception as e:
+                errors.append(f"Epsilon {epsilon}: {str(e)}")
+                print(f"Error running experiment with epsilon={epsilon}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        if not results:
+            return jsonify({
+                "success": False,
+                "error": f"All experiments failed. Errors: {'; '.join(errors)}"
+            }), 500
         
         # Also run baseline (no DP)
-        baseline = run_federated_experiment(
-            num_clients=num_clients,
-            num_rounds=num_rounds,
-            use_dp=False,
-            num_samples=1000
-        )
+        baseline = None
+        try:
+            baseline_result = run_federated_experiment(
+                num_clients=num_clients,
+                num_rounds=num_rounds,
+                local_epochs=local_epochs,
+                use_dp=False,
+                num_samples=num_samples,
+                dataset_name=dataset_name
+            )
+            if baseline_result.get("success"):
+                baseline = {
+                    "final_accuracy": baseline_result.get("final_accuracy", 0.0),
+                    "final_loss": baseline_result.get("final_loss", 0.0),
+                    "round_metrics": baseline_result.get("round_metrics", [])
+                }
+        except Exception as e:
+            print(f"Error running baseline experiment: {e}")
+            # Continue without baseline if it fails
         
         return jsonify({
             "success": True,
             "results": results,
-            "baseline": baseline if baseline["success"] else None
+            "baseline": baseline,
+            "errors": errors if errors else None
         })
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Error in compare_noise: {error_trace}")
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "traceback": error_trace
         }), 500
 
 
@@ -830,12 +951,29 @@ def run_federated_experiment_with_progress(
                     y = y[indices]
                 num_features = 784
                 num_classes = 10
+                
+                # Validate data
+                if len(X) == 0 or len(y) == 0:
+                    error_msg = "MNIST dataset loaded but is empty"
+                    socketio.emit('experiment_error', {
+                        'experiment_id': experiment_id,
+                        'error': error_msg
+                    }, room=experiment_id, broadcast=True)
+                    return {"success": False, "error": error_msg}
             except ImportError as e:
+                error_msg = f"MNIST requires torchvision: {str(e)}"
                 socketio.emit('experiment_error', {
                     'experiment_id': experiment_id,
-                    'error': f"MNIST requires torchvision: {str(e)}"
+                    'error': error_msg
                 }, room=experiment_id, broadcast=True)
-                return {"success": False, "error": str(e)}
+                return {"success": False, "error": error_msg}
+            except Exception as e:
+                error_msg = f"Failed to load MNIST dataset: {str(e)}"
+                socketio.emit('experiment_error', {
+                    'experiment_id': experiment_id,
+                    'error': error_msg
+                }, room=experiment_id, broadcast=True)
+                return {"success": False, "error": error_msg}
         else:
             X, y = generate_synthetic_data(
                 n_samples=num_samples,

@@ -170,18 +170,21 @@ def load_mnist(
         transform=transform
     )
     
-    # Convert to tensors
+    # Efficiently convert to tensors using DataLoader
+    data_loader = DataLoader(dataset, batch_size=1000, shuffle=False)
+    
     X_list = []
     y_list = []
     
-    for i in range(len(dataset)):
-        img, label = dataset[i]
-        # Flatten image (28x28 -> 784)
-        X_list.append(img.view(-1))
-        y_list.append(label)
+    for batch_images, batch_labels in data_loader:
+        # Flatten images (batch_size, 1, 28, 28) -> (batch_size, 784)
+        batch_images_flat = batch_images.view(batch_images.size(0), -1)
+        X_list.append(batch_images_flat)
+        y_list.append(batch_labels)
     
-    X = torch.stack(X_list)
-    y = torch.stack(y_list)
+    # Concatenate all batches
+    X = torch.cat(X_list, dim=0)
+    y = torch.cat(y_list, dim=0)
     
     return X, y
 

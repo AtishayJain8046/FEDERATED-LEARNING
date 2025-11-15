@@ -135,7 +135,29 @@ async function runExperiment() {
             body: JSON.stringify(config)
         });
         
-        const result = await response.json();
+        // Get response text (can only read once)
+        const responseText = await response.text();
+        
+        // Check if response is OK
+        if (!response.ok) {
+            console.error('Server error response:', responseText);
+            try {
+                const errorJson = JSON.parse(responseText);
+                throw new Error(errorJson.error || `Server error: ${response.status}`);
+            } catch (parseError) {
+                throw new Error(`Server error (${response.status}): ${responseText.substring(0, 200)}`);
+            }
+        }
+        
+        // Try to parse JSON
+        let result;
+        try {
+            result = JSON.parse(responseText);
+        } catch (parseError) {
+            console.error('JSON parse error:', parseError);
+            console.error('Response text (first 500 chars):', responseText.substring(0, 500));
+            throw new Error(`Failed to parse server response: ${parseError.message}. Response may contain non-JSON data.`);
+        }
         
         if (result.success) {
             displayResults(result);
@@ -162,10 +184,25 @@ async function compareNoiseLevels() {
     document.getElementById('error-message').classList.add('hidden');
     
     try {
+        const datasetName = document.getElementById('dataset_name').value;
+        
+        // Validate dataset selection
+        if (datasetName === 'uploaded' && uploadedDatasetInfo) {
+            showError('Compare noise levels is not supported with uploaded datasets. Please use synthetic or MNIST.');
+            btn.disabled = false;
+            document.getElementById('loading').classList.add('hidden');
+            return;
+        }
+        
         const config = {
             epsilon_values: [0.1, 0.5, 1.0, 2.0, 5.0],
             num_rounds: parseInt(document.getElementById('num_rounds').value),
-            num_clients: parseInt(document.getElementById('num_clients').value)
+            num_clients: parseInt(document.getElementById('num_clients').value),
+            local_epochs: parseInt(document.getElementById('local_epochs').value),
+            dataset_name: datasetName === 'uploaded' && uploadedDatasetInfo 
+                ? `uploaded:${uploadedDatasetInfo.filename}` 
+                : datasetName,
+            num_samples: datasetName === 'mnist' ? 5000 : 1000
         };
         
         const response = await fetch('/api/compare_noise', {
