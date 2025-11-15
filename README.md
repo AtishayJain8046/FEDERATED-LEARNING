@@ -27,8 +27,19 @@ federated-privacy-demo/
 │   └── protocols.py       # DP, SMPC, HE implementations
 ├── experiments/
 │   └── run_demo.py        # Main demo script
+├── templates/             # Web frontend
+│   └── index.html         # Main HTML template
+├── static/                 # Static web assets
+│   ├── css/
+│   │   └── style.css      # Styling
+│   └── js/
+│       └── app.js         # Frontend logic
+├── app.py                 # Flask web application
+├── start_frontend.py      # Quick start script
 ├── requirements.txt        # Python dependencies
 ├── CONTRIBUTING.md         # Work division and guide
+├── FRONTEND_README.md      # Frontend user guide
+├── IMPROVEMENT_IDEAS.md    # Enhancement suggestions
 └── README.md              # This file
 ```
 
@@ -70,6 +81,7 @@ federated-privacy-demo/
 
 ### Running the Demo
 
+**Option 1: Command Line Demo**
 ```bash
 python experiments/run_demo.py
 ```
@@ -79,6 +91,23 @@ This will run four demonstrations:
 2. **Differential Privacy** - Gradient clipping and noise addition
 3. **Secure Multi-Party Computation** - Secret sharing demonstration
 4. **Homomorphic Encryption** - Encrypted computation (requires TenSEAL)
+
+**Option 2: Interactive Web Frontend** 🌐
+```bash
+# Quick start
+python start_frontend.py
+
+# Or run directly
+python app.py
+```
+
+Then open `http://localhost:5000` in your browser to:
+- 🎛️ **Configure experiments** with interactive controls
+- 📊 **Visualize** how noise affects model accuracy
+- 🔍 **Compare** different privacy levels (ε values)
+- 📈 **See real-time** training progress and metrics
+
+See [FRONTEND_README.md](FRONTEND_README.md) for detailed frontend documentation.
 
 ## 📚 Components Explained
 
@@ -190,6 +219,8 @@ dp_gradients = dp.apply_dp(gradients)  # Clip + add noise
 - ✅ **Secret Sharing**: Secure aggregation via SMPC
 - ✅ **Homomorphic Encryption**: Encrypted computation support
 - ✅ **Synthetic Data**: Easy-to-use data generators
+- ✅ **Interactive Web Frontend**: Visualize privacy-accuracy trade-offs
+- ✅ **Real-time Visualizations**: Charts showing training progress
 - ✅ **Modular Design**: Easy to extend and customize
 
 ## 🛠️ Dependencies
@@ -199,6 +230,8 @@ dp_gradients = dp.apply_dp(gradients)  # Clip + add noise
 - **Opacus** (≥1.4.0): Differential privacy utilities
 - **TenSEAL** (≥0.3.14): Homomorphic encryption (optional but recommended)
 - **scikit-learn** (≥1.3.0): Data generation utilities
+- **Flask** (≥2.3.0): Web framework for frontend
+- **flask-cors** (≥4.0.0): CORS support for API
 - **matplotlib** (≥3.7.0): Visualization (optional)
 - **tqdm** (≥4.65.0): Progress bars (optional)
 

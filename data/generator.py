@@ -5,8 +5,15 @@ Synthetic dataset generator for federated learning demo.
 import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 from sklearn.datasets import make_classification, make_blobs
+
+try:
+    from torchvision import datasets, transforms
+    TORCHVISION_AVAILABLE = True
+except ImportError:
+    TORCHVISION_AVAILABLE = False
+    print("Warning: torchvision not available. MNIST dataset will not be available.")
 
 
 class SyntheticDataset(Dataset):
@@ -128,4 +135,78 @@ def split_data_among_clients(
             (torch.cat(X_list), torch.cat(y_list))
             for X_list, y_list in client_data
         ]
+
+
+def load_mnist(
+    data_dir: str = './data/mnist',
+    train: bool = True,
+    download: bool = True
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Load MNIST dataset.
+    
+    Args:
+        data_dir: Directory to store/load MNIST data
+        train: If True, load training set; if False, load test set
+        download: If True, download MNIST if not present
+        
+    Returns:
+        Tuple of (features, labels) tensors
+    """
+    if not TORCHVISION_AVAILABLE:
+        raise ImportError("torchvision is required for MNIST. Install with: pip install torchvision")
+    
+    # Transform: convert to tensor and normalize
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))  # MNIST mean and std
+    ])
+    
+    # Load dataset
+    dataset = datasets.MNIST(
+        root=data_dir,
+        train=train,
+        download=download,
+        transform=transform
+    )
+    
+    # Convert to tensors
+    X_list = []
+    y_list = []
+    
+    for i in range(len(dataset)):
+        img, label = dataset[i]
+        # Flatten image (28x28 -> 784)
+        X_list.append(img.view(-1))
+        y_list.append(label)
+    
+    X = torch.stack(X_list)
+    y = torch.stack(y_list)
+    
+    return X, y
+
+
+def load_dataset(dataset_name: str = "synthetic", **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Load a dataset by name.
+    
+    Args:
+        dataset_name: Name of dataset ("synthetic" or "mnist")
+        **kwargs: Additional arguments for dataset loading
+        
+    Returns:
+        Tuple of (features, labels) tensors
+    """
+    if dataset_name.lower() == "mnist":
+        train = kwargs.get('train', True)
+        return load_mnist(train=train, download=kwargs.get('download', True))
+    elif dataset_name.lower() == "synthetic":
+        return generate_synthetic_data(
+            n_samples=kwargs.get('n_samples', 1000),
+            n_features=kwargs.get('n_features', 784),
+            n_classes=kwargs.get('n_classes', 10),
+            random_state=kwargs.get('random_state', 42)
+        )
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}. Supported: 'synthetic', 'mnist'")
 

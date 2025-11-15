@@ -140,6 +140,155 @@ def demo_smpc():
     print("\n✓ Secret sharing and reconstruction successful!")
 
 
+def demo_fl_with_dp():
+    """Demo: Compare Federated Learning with and without Differential Privacy."""
+    print("\n" + "="*60)
+    print("DEMO 5: Federated Learning: With vs Without Differential Privacy")
+    print("="*60)
+    
+    # Generate data
+    print("\nGenerating synthetic data...")
+    X, y = generate_synthetic_data(n_samples=1000, n_features=784, n_classes=10)
+    test_X, test_y = generate_synthetic_data(n_samples=200, n_features=784, n_classes=10, random_state=999)
+    
+    num_clients = 5
+    num_rounds = 10
+    
+    # Split data
+    client_data = split_data_among_clients(X, y, num_clients, iid=True)
+    print(f"Split data among {num_clients} clients")
+    
+    results = {}
+    
+    # Run FL WITHOUT DP
+    print("\n" + "-"*60)
+    print("Running Federated Learning WITHOUT Differential Privacy...")
+    print("-"*60)
+    
+    model_no_dp = create_model("mlp", input_size=784, num_classes=10)
+    server_no_dp = FederatedServer(global_model=model_no_dp)
+    
+    for i, (X_client, y_client) in enumerate(client_data):
+        client_model = create_model("mlp", input_size=784, num_classes=10)
+        client = FederatedClient(
+            client_id=i,
+            model=client_model,
+            train_data=(X_client, y_client),
+            lr=0.01
+        )
+        server_no_dp.register_client(client)
+    
+    print(f"Running {num_rounds} federated learning rounds...")
+    for round_num in range(num_rounds):
+        round_info = server_no_dp.run_round(num_clients=3, local_epochs=1)
+        if (round_num + 1) % 2 == 0:
+            print(f"  Round {round_info['round']}: Avg Loss = {round_info['avg_loss']:.4f}")
+    
+    metrics_no_dp = server_no_dp.evaluate_global_model((test_X, test_y))
+    results['no_dp'] = {
+        'accuracy': metrics_no_dp['accuracy'],
+        'loss': metrics_no_dp['loss']
+    }
+    
+    print(f"\n✓ Without DP - Final Accuracy: {metrics_no_dp['accuracy']:.2f}%")
+    print(f"  Final Loss: {metrics_no_dp['loss']:.4f}")
+    
+    # Run FL WITH DP (different epsilon values)
+    epsilon_values = [0.5, 1.0, 2.0, 5.0]
+    
+    for epsilon in epsilon_values:
+        print("\n" + "-"*60)
+        print(f"Running Federated Learning WITH Differential Privacy (ε={epsilon})...")
+        print("-"*60)
+        
+        dp = DifferentialPrivacy(epsilon=epsilon, delta=1e-5, clip_norm=1.0)
+        print(f"DP Parameters: ε={dp.epsilon}, δ={dp.delta}, Clip Norm={dp.clip_norm}")
+        
+        model_dp = create_model("mlp", input_size=784, num_classes=10)
+        server_dp = FederatedServer(global_model=model_dp)
+        
+        for i, (X_client, y_client) in enumerate(client_data):
+            client_model = create_model("mlp", input_size=784, num_classes=10)
+            client = FederatedClient(
+                client_id=i,
+                model=client_model,
+                train_data=(X_client, y_client),
+                lr=0.01
+            )
+            server_dp.register_client(client)
+        
+        print(f"Running {num_rounds} federated learning rounds...")
+        for round_num in range(num_rounds):
+            # Broadcast model
+            server_dp.broadcast_model()
+            
+            # Select clients
+            selected_indices = server_dp.select_clients(3)
+            selected_clients = [server_dp.clients[i] for i in selected_indices]
+            
+            # Collect updates with DP
+            client_updates = []
+            client_metrics = []
+            
+            for client in selected_clients:
+                metrics = client.train(epochs=1)
+                client_metrics.append(metrics)
+                
+                params = client.get_model_parameters()
+                
+                # Apply DP
+                global_params = server_dp.global_model.state_dict()
+                param_diff = {k: params[k] - global_params[k] for k in params.keys()}
+                dp_params = dp.apply_dp(param_diff)
+                params = {k: global_params[k] + dp_params[k] for k in params.keys()}
+                
+                num_samples = len(client.data_loader.dataset) if client.data_loader else 1
+                client_updates.append({
+                    "parameters": params,
+                    "num_samples": num_samples,
+                    "client_id": client.client_id
+                })
+            
+            # Aggregate
+            aggregated_params = server_dp.aggregate_updates(client_updates)
+            server_dp.global_model.load_state_dict(aggregated_params)
+            
+            if (round_num + 1) % 2 == 0:
+                avg_loss = sum(m["loss"] for m in client_metrics) / len(client_metrics)
+                print(f"  Round {round_num + 1}: Avg Loss = {avg_loss:.4f}")
+        
+        metrics_dp = server_dp.evaluate_global_model((test_X, test_y))
+        results[f'dp_eps_{epsilon}'] = {
+            'accuracy': metrics_dp['accuracy'],
+            'loss': metrics_dp['loss'],
+            'epsilon': epsilon
+        }
+        
+        print(f"\n✓ With DP (ε={epsilon}) - Final Accuracy: {metrics_dp['accuracy']:.2f}%")
+        print(f"  Final Loss: {metrics_dp['loss']:.4f}")
+        print(f"  Accuracy Drop: {results['no_dp']['accuracy'] - metrics_dp['accuracy']:.2f}%")
+    
+    # Summary comparison
+    print("\n" + "="*60)
+    print("PRIVACY-ACCURACY TRADE-OFF SUMMARY")
+    print("="*60)
+    print(f"\nBaseline (No DP):")
+    print(f"  Accuracy: {results['no_dp']['accuracy']:.2f}%")
+    print(f"  Loss: {results['no_dp']['loss']:.4f}")
+    
+    print(f"\nWith Differential Privacy:")
+    for key in sorted([k for k in results.keys() if k.startswith('dp_eps_')]):
+        eps = results[key]['epsilon']
+        acc = results[key]['accuracy']
+        loss = results[key]['loss']
+        drop = results['no_dp']['accuracy'] - acc
+        print(f"  ε={eps:4.1f}: Accuracy={acc:6.2f}% (Drop: {drop:5.2f}%), Loss={loss:.4f}")
+    
+    print("\n" + "="*60)
+    print("KEY INSIGHT: Lower ε (more privacy) = Higher accuracy drop")
+    print("="*60)
+
+
 def demo_homomorphic_encryption():
     """Demo: Homomorphic Encryption."""
     print("\n" + "="*60)
@@ -195,6 +344,7 @@ def main():
     print("  2. Differential Privacy")
     print("  3. Secure Multi-Party Computation")
     print("  4. Homomorphic Encryption")
+    print("  5. FL with vs without DP (Privacy-Accuracy Trade-off)")
     
     # Run demos
     try:
@@ -202,6 +352,7 @@ def main():
         demo_differential_privacy()
         demo_smpc()
         demo_homomorphic_encryption()
+        demo_fl_with_dp()
         
         print("\n" + "="*60)
         print("ALL DEMOS COMPLETED SUCCESSFULLY!")

@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Federated Learning Privacy Demo</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔒 Federated Learning Privacy Demo</h1>
+            <p class="subtitle">Explore how noise affects model accuracy in privacy-preserving federated learning</p>
+        </header>
+
+        <div class="main-content">
+            <!-- Control Panel -->
+            <div class="control-panel">
+                <h2>⚙️ Experiment Configuration</h2>
+                
+                <div class="form-group">
+                    <label for="num_clients">Number of Clients:</label>
+                    <input type="number" id="num_clients" value="5" min="2" max="20">
+                </div>
+
+                <div class="form-group">
+                    <label for="num_rounds">Federated Rounds:</label>
+                    <input type="number" id="num_rounds" value="10" min="1" max="50">
+                </div>
+
+                <div class="form-group">
+                    <label for="local_epochs">Local Epochs per Round:</label>
+                    <input type="number" id="local_epochs" value="1" min="1" max="10">
+                </div>
+
+                <div class="form-group">
+                    <label for="dataset_name">Dataset:</label>
+                    <select id="dataset_name" class="form-select">
+                        <option value="synthetic">Synthetic Data</option>
+                        <option value="mnist">MNIST (Handwritten Digits)</option>
+                        <option value="uploaded">Upload Custom Dataset</option>
+                    </select>
+                    <small>MNIST requires torchvision. Will download automatically on first use.</small>
+                </div>
+
+                <div id="upload-controls" class="form-group hidden">
+                    <label for="dataset_file">Upload Dataset File:</label>
+                    <input type="file" id="dataset_file" accept=".npz,.pkl,.pth,.pt,.npy">
+                    <small>
+                        Supported formats: .npz (numpy with 'X' and 'y'), .pkl/.pth/.pt (PyTorch tuple/dict), .npy (numpy array)
+                        <br>File must contain features (X) and labels (y). Max size: 100MB
+                    </small>
+                    <div id="upload-status" class="upload-status hidden"></div>
+                    <button id="upload-btn" class="btn btn-secondary" style="margin-top: 10px;">📤 Upload Dataset</button>
+                </div>
+
+                <div class="form-group">
+                    <label class="privacy-label">Privacy Techniques (Select Multiple):</label>
+                    <div class="privacy-options">
+                        <label class="privacy-option">
+                            <input type="checkbox" id="use_dp" value="dp">
+                            <span>Differential Privacy (DP)</span>
+                        </label>
+                        <label class="privacy-option">
+                            <input type="checkbox" id="use_smpc" value="smpc">
+                            <span>Secure Multi-Party Computation (SMPC)</span>
+                        </label>
+                        <label class="privacy-option">
+                            <input type="checkbox" id="use_he" value="he">
+                            <span>Homomorphic Encryption (HE) - Lightweight</span>
+                        </label>
+                    </div>
+                    <small>You can select multiple techniques. They will be applied in order: DP → SMPC → HE</small>
+                </div>
+
+                <div id="dp-controls" class="privacy-controls hidden">
+                    <div class="form-group">
+                        <label for="epsilon">Privacy Budget (ε):</label>
+                        <input type="range" id="epsilon" min="0.1" max="10" step="0.1" value="1.0">
+                        <span id="epsilon-value">1.0</span>
+                        <small>Lower ε = More Privacy = More Noise</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="delta">Failure Probability (δ):</label>
+                        <input type="number" id="delta" value="0.00001" step="0.00001" min="0.000001">
+                        <small>Typically 1e-5 or smaller</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="clip_norm">Gradient Clip Norm:</label>
+                        <input type="range" id="clip_norm" min="0.1" max="5.0" step="0.1" value="1.0">
+                        <span id="clip_norm-value">1.0</span>
+                    </div>
+                </div>
+
+                <div id="smpc-controls" class="privacy-controls hidden">
+                    <div class="form-group">
+                        <p><strong>Secure Multi-Party Computation</strong></p>
+                        <small>Uses secret sharing to protect individual client updates during aggregation. Server cannot see individual values, only the aggregated result.</small>
+                    </div>
+                </div>
+
+                <div id="he-controls" class="privacy-controls hidden">
+                    <div class="form-group">
+                        <p><strong>Homomorphic Encryption (Lightweight Mode)</strong></p>
+                        <small>Encrypts parameters and performs aggregation on encrypted data. Only demonstrates on a subset of parameters for performance. Requires TenSEAL library.</small>
+                        <div class="warning-box">
+                            ⚠️ <strong>Note:</strong> HE is computationally expensive. Lightweight mode only encrypts first layer parameters for demonstration.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="button-group">
+                    <button id="run-btn" class="btn btn-primary">🚀 Run Experiment</button>
+                    <button id="compare-btn" class="btn btn-secondary">📊 Compare Noise Levels</button>
+                    <button id="clear-btn" class="btn btn-danger">🗑️ Clear History</button>
+                </div>
+            </div>
+
+            <!-- Results Panel -->
+            <div class="results-panel">
+                <h2>📈 Results</h2>
+                
+                <div id="loading" class="loading hidden">
+                    <div class="spinner"></div>
+                    <p>Running experiment...</p>
+                </div>
+
+                <div id="error-message" class="error-message hidden"></div>
+
+                <div id="current-results" class="current-results hidden">
+                    <div class="metrics-grid">
+                        <div class="metric-card">
+                            <div class="metric-label">Final Accuracy</div>
+                            <div class="metric-value" id="final-accuracy">-</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Final Loss</div>
+                            <div class="metric-value" id="final-loss">-</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Privacy Technique</div>
+                            <div class="metric-value" id="current-epsilon">-</div>
+                        </div>
+                    </div>
+
+                    <div class="chart-container">
+                        <canvas id="training-chart"></canvas>
+                    </div>
+                </div>
+
+                <div id="comparison-results" class="comparison-results hidden">
+                    <h3>Noise vs Accuracy Trade-off</h3>
+                    <div class="chart-container">
+                        <canvas id="comparison-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="comparison-training-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Info Panel -->
+        <div class="info-panel">
+            <h2>💡 Understanding the Trade-offs</h2>
+            <div class="info-grid">
+                <div class="info-card">
+                    <h3>Privacy Budget (ε) - DP Only</h3>
+                    <p>Lower values provide stronger privacy guarantees but add more noise, reducing accuracy.</p>
+                    <ul>
+                        <li><strong>ε = 0.1:</strong> Very strong privacy, significant accuracy loss</li>
+                        <li><strong>ε = 1.0:</strong> Good balance (recommended)</li>
+                        <li><strong>ε = 10.0:</strong> Weak privacy, minimal accuracy impact</li>
+                    </ul>
+                </div>
+                <div class="info-card">
+                    <h3>Differential Privacy (DP)</h3>
+                    <p>Adds calibrated noise to gradients to prevent inference of individual data points.</p>
+                    <p><strong>Key Insight:</strong> More noise = Better privacy but lower model accuracy</p>
+                </div>
+                <div class="info-card">
+                    <h3>Secure Multi-Party Computation (SMPC)</h3>
+                    <p>Uses secret sharing to protect individual client updates. Server cannot see individual values, only aggregated results.</p>
+                    <p><strong>Key Insight:</strong> No accuracy loss, but requires multiple parties</p>
+                </div>
+                <div class="info-card">
+                    <h3>Homomorphic Encryption (HE)</h3>
+                    <p>Enables computation on encrypted data. Server aggregates without seeing plaintext values.</p>
+                    <p><strong>Key Insight:</strong> Strongest privacy, but computationally expensive (lightweight mode for demo)</p>
+                </div>
+                <div class="info-card">
+                    <h3>Federated Learning</h3>
+                    <p>Trains models across multiple clients without sharing raw data. Only model updates are shared.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
+
